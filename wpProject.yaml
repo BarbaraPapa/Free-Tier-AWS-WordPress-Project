@@ -1,0 +1,267 @@
+#! NOTE: The following code is for testing only
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Free Tier WordPress Scalable and Fault-Tolerant on AWS"
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: Instance type for the web server
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key name to access EC2 instances
+  DBName:
+    Type: String
+    Default: wordpress
+  DBUser:
+    Type: String
+    Default: admin #!  just for testing
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Database Password 
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+
+Resources:
+  # VPC
+  WordpressVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: WordpressVPC
+
+  # Public Subnets 
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WordpressVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WordpressVPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs ""]
+
+  # Private Subnets for RDS
+  PrivateSubnetDB1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WordpressVPC
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  PrivateSubnetDB2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WordpressVPC
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [1, !GetAZs ""]
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref WordpressVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Route Table 
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WordpressVPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Groups
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access for ALB
+      VpcId: !Ref WordpressVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access for EC2
+      VpcId: !Ref WordpressVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0 #! just for testing
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access for RDS
+      VpcId: !Ref WordpressVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+
+  # Application Load Balancer
+  MyALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: MyWordPressALB
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "60"
+
+  # Target Group
+  MyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref WordpressVPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckPath: "/"
+
+  # Listener
+  MyListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref MyALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MyTargetGroup
+
+  # Launch Template for EC2 Instances
+  MyLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: MyLaunchTemplate
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+              - !Ref EC2SecurityGroup
+        ImageId: ami-0a897ba00eaed7398 # Amazon Linux (us-west-2)
+        UserData: !Base64 |
+          #!/bin/bash
+          yum update -y
+          amazon-linux-extras enable php8.0
+          yum install -y httpd php php-mysqlnd wget unzip
+          service httpd start
+          chkconfig httpd on
+
+          # Download and configure WordPress
+          wget https://wordpress.org/latest.tar.gz
+          tar -xzf latest.tar.gz
+          cp -r wordpress/* /var/www/html/
+          chown -R apache:apache /var/www/html/
+          chmod -R 755 /var/www/html/
+
+          # wp-config.php configuration
+          cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+          sed -i "s/database_name_here/${DBName}/" /var/www/html/wp-config.php
+          sed -i "s/username_here/${DBUser}/" /var/www/html/wp-config.php
+          sed -i "s/password_here/${DBPassword}/" /var/www/html/wp-config.php
+          sed -i "s/localhost/${MyRDSInstance.Endpoint.Address}/" /var/www/html/wp-config.php
+          
+
+  # Auto Scaling Group
+  MyAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref MyLaunchTemplate
+        Version: !GetAtt MyLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 2
+      TargetGroupARNs:
+        - !Ref MyTargetGroup
+
+  # S3 bucket
+  MediaS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: wp-media-files-bucket-kuboski2025 #!  just for testing
+
+  # RDS Database
+  MyRDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceClass: db.t3.micro
+      Engine: MySQL
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      AllocatedStorage: !Ref DBAllocatedStorage
+      DBName: !Ref DBName
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref MyDBSubnetGroup
+      PubliclyAccessible: false
+
+  MyDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet Group for RDS
+      SubnetIds:
+        - !Ref PrivateSubnetDB1
+        - !Ref PrivateSubnetDB2
+
+Outputs:
+  WebsiteURL:
+    Description: WordPress Site URL
+    Value: !Join ["", ["http://", !GetAtt MyALB.DNSName]]
+  S3BucketName:
+    Description: S3 bucket name for media files
+    Value: !Ref MediaS3Bucket
