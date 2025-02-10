@@ -4,6 +4,9 @@
 This project deploys a **scalable and fault-tolerant WordPress site** on AWS using **CloudFormation**. The deployment utilizes only **AWS Free Tier** resources and is designed to be highly available, with multiple subnets, an Auto Scaling Group, an Application Load Balancer (ALB), an Amazon RDS instance, and an S3 bucket for media file storage.  
 
 ## Architecture Overview  
+
+![image](https://github.com/user-attachments/assets/ba46e941-8cf5-4175-9a8b-466270688f84)
+
 The infrastructure includes the following components:  
 - **VPC** with public and private subnets across multiple Availability Zones.  
 - **Application Load Balancer (ALB)** for distributing traffic.  
@@ -62,4 +65,4 @@ This project is licensed under the MIT License.
 
 ### Disclaimer  
 The project is designed to remain within the AWS Free Tier, but exceeding the limits may incur charges. Monitor your usage on the AWS Console.  
-```
+---
